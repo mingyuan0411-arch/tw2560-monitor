@@ -1,123 +1,96 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-    last = state.get("last_summary_utc")
-    if not last:
-        return True
+"""
+TW 2560 Trend Monitor v2.0
+台股 2560 趨勢雷達
 
-    try:
-        last_dt = datetime.fromisoformat(last)
-        return (
-            datetime.now(timezone.utc) - last_dt
-        ).total_seconds() >= SUMMARY_INTERVAL
-    except Exception:
-        return True
+核心 2560：
+- 25MA 向上
+- 收盤站上 25MA
+- 5期均量 > 60期均量
 
+台股版週期：
+- 1D：大趨勢
+- 60m：回踩/承接
+- 15m：SETUP
+- 5m：ENTRY
 
-def send_summary(results, state, error_count, force=False):
-    if not summary_due(state, force=force):
-        return
+狀態：
+NO_TREND / WATCH / PULLBACK_READY / ENTRY / HOLD
 
-    buckets = {
-        "ENTRY": [],
-        "PULLBACK_READY": [],
-        "HOLD": [],
-        "WATCH": [],
-        "NO_TREND": [],
-    }
+原則：
+- 趨勢成立 != 現在適合進場
+- 空間不足只代表不追，不代表趨勢失效
+- 只在台北時間 09:00~13:30 監控
+- 不自動下單
+"""
 
-    for r in results:
-        status = r.get("status")
-        if status not in buckets:
-            continue
+import json
+import os
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone, time as dt_time
+from email.header import Header
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-        s = r.get("space") or {}
+TW_STOCKS = {
+    "0050": "0050.TW",
+    "2330": "2330.TW",
+    "2317": "2317.TW",
+    "2454": "2454.TW",
+    "2382": "2382.TW",
+    "3231": "3231.TW",
+    "2308": "2308.TW",
+}
 
-        label = f"{r['code']} {r['name']}"
-        if s.get("effective_space_pct") is not None:
-            label += f"({s['effective_space_pct']:+.1f}%)"
+TW_NAMES = {
+    "0050": "元大台灣50",
+    "2330": "台積電",
+    "2317": "鴻海",
+    "2454": "聯發科",
+    "2382": "廣達",
+    "3231": "緯創",
+    "2308": "台達電",
+}
 
-        buckets[status].append(label)
+TW_TZ = ZoneInfo("Asia/Taipei")
+TW_OPEN = dt_time(9, 0)
+TW_CLOSE = dt_time(13, 30)
 
-    def show(items):
-        return "、".join(items) if items else "無"
+ONE_D = 86400
+ONE_H = 3600
+FIFTEEN_M = 900
+FIVE_M = 300
 
-    msg = (
-        f"[台股2560]\n"
-        f"ENTRY：{show(buckets['ENTRY'])}\n"
-        f"PULLBACK_READY：{show(buckets['PULLBACK_READY'])}\n"
-        f"HOLD：{show(buckets['HOLD'])}\n"
-        f"WATCH：{show(buckets['WATCH'])}\n"
-        f"NO_TREND：{show(buckets['NO_TREND'])}\n\n"
-        f"本輪錯誤：{error_count}"
-    )
+MIN_NEW_ENTRY_SPACE_PCT = 2.0
+PULLBACK_BAND_PCT = 1.2
+SUMMARY_INTERVAL = 1800
 
-    if send_ntfy(
-        "台股2560 Monitor Summary",
-        msg,
-        "default",
-        "bar_chart",
-    ):
-        state["last_summary_utc"] = now_iso()
+STATE_DIR = Path(".tw2560_state")
+STATE_FILE = STATE_DIR / "state.json"
 
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+NTFY_TOPIC = (
+    os.getenv("NTFY_TOPIC_TW2560", "").strip()
+    or os.getenv("NTFY_TOPIC_SHORT35", "").strip()
+)
 
-def main():
-    print("TW 2560 Trend Monitor | v2.0")
-    print("UTC:", now_iso())
-    print("TW market open:", tw_market_open())
-    print("Manual run:", MANUAL_RUN)
+GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME", "").strip()
+MANUAL_RUN = GITHUB_EVENT_NAME == "workflow_dispatch"
 
-    state = load_state()
-
-    if not tw_market_open():
-        print("TW2560 SKIP: outside 09:00-13:30 Taipei time")
-        save_state(state)
-        return
-
-    results = []
-    errors = []
-
-    for code, yahoo_symbol in TW_STOCKS.items():
-        try:
-            r = analyze(code, yahoo_symbol)
-            results.append(r)
-
-            if r["status"] in ("WAIT_HISTORY", "STALE_DATA"):
-                print(f"{code:<6} {r['status']}")
-                continue
-
-            s = r.get("space") or {}
-
-            print(
-                f"{code:<6} "
-                f"{r['status']:<16} "
-                f"price={price_text(r.get('price'))} "
-                f"1D2560={r.get('1d_2560')} "
-                f"1H={r.get('1h_trend')} "
-                f"pullback={r.get('1h_pullback')} "
-                f"15m={r.get('15m_setup')} "
-                f"5m={r.get('5m_entry')} "
-                f"space={pct_text(s.get('effective_space_pct'))}"
-            )
-
-            notify_status(r, state)
-
-        except Exception as e:
-            errors.append((code, str(e)))
-            print(f"{code:<6} ERROR {e}")
-
-        time.sleep(0.15)
-
-    send_summary(
-        results,
-        state,
-        len(errors),
-        force=MANUAL_RUN,
-    )
-
-    save_state(state)
-
-    print("\nERROR COUNT:", len(errors))
-    print("STATE FILE:", STATE_FILE)
+YAHOO_HOSTS = [
+    "https://query1.finance.yahoo.com",
+    "https://query2.finance.yahoo.com",
+]
 
 
-if __name__ == "__main__":
-    main()
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def price_text(v):
+    if v is None:
+        return "N/A"
