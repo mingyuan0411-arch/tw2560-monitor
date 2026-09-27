@@ -1,0 +1,57 @@
+name: TW 2560 Monitor
+
+on:
+  schedule:
+    # 台股週一～週五
+    # GitHub cron 使用 UTC
+    # 台灣 09:00~13:30 = UTC 01:00~05:30
+    # 每10分鐘巡一次
+    - cron: "*/10 1-5 * * 1-5"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tw2560-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore TW2560 state
+        uses: actions/cache/restore@v4
+        with:
+          path: .tw2560_state
+          key: tw2560-state-${{ github.run_id }}
+          restore-keys: |
+            tw2560-state-
+
+      - name: Run TW2560 monitor
+        env:
+          NTFY_TOPIC_TW2560: ${{ secrets.NTFY_TOPIC_TW2560 }}
+          NTFY_SERVER: https://ntfy.sh
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+
+        run: |
+          python tw2560_monitor.py
+
+      - name: Save TW2560 state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .tw2560_state
+          key: tw2560-state-${{ github.run_id }}
