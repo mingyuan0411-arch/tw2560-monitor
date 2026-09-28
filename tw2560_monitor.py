@@ -2,27 +2,28 @@
 # -*- coding: utf-8 -*-
 
 """
-Taiwan Stock 3~5% Short-Term Long Monitor FINAL 2026-09-29
-===============================================
+TW 2560 Trend Monitor FINAL 2026-09-29
+台股 2560 趨勢雷達
 
-台股版 35 雷達，核心沿用目前 35 v1.9 邏輯，但改成台股專用：
+核心 2560：
+- 25MA 向上
+- 收盤站上 25MA
+- 5期均量 > 60期均量
 
-1H  -> 主趨勢
-15m -> READY 前置條件
-5m  -> ENTRY 最後觸發
+台股版週期：
+- 1D：大趨勢
+- 60m：回踩/承接
+- 15m：SETUP
+- 5m：ENTRY
 
-重要規則：
-- 只做趨勢多
-- 不自動下單，最後由人工決定
-- READY 前先估算空間：>= 2.5% 才進 1 分鐘快掃
-- 5m 達標後重新估算：>= 2.0% 才發正式 ENTRY
-- 5m 達標但空間不足 -> ENTRY_CHECK
-- READY / ENTRY_CHECK 後，每 60 秒快掃，最多 5 輪
-- 台股只在台北時間 09:00~13:30、週一至週五監控
-- 非交易日 / 無新資料時不發交易訊號
-- 顯示 5m 成交額、近 1H 成交額、5m 量能比
-- 成交額以「成交量 x 價格」估算，單位為 TWD
-- 考慮台股單日漲停約 +10% 上限，不把目標估到漲停之外
+狀態：
+NO_TREND / WATCH / PULLBACK_READY / ENTRY / HOLD
+
+原則：
+- 趨勢成立 != 現在適合進場
+- 空間不足只代表不追，不代表趨勢失效
+- 只在台北時間 09:00~13:30 監控
+- 不自動下單
 """
 
 import json
@@ -34,11 +35,6 @@ from datetime import datetime, timezone, time as dt_time
 from email.header import Header
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
-
-# ============================================================
-# 標的
-# ============================================================
 
 TW_STOCKS = {
     "0050": "0050.TW",
@@ -94,3 +90,7 @@ TW_NAMES = {
     "2912": "統一超",
     "2207": "和泰車",
     "6446": "藥華藥",
+}
+
+TW_TZ = ZoneInfo("Asia/Taipei")
+TW_OPEN = dt_time(9, 0)
